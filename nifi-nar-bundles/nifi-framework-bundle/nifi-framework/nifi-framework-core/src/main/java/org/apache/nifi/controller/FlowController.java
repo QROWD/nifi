@@ -32,6 +32,7 @@ import org.apache.nifi.authorization.RequestAction;
 import org.apache.nifi.authorization.Resource;
 import org.apache.nifi.authorization.resource.Authorizable;
 import org.apache.nifi.authorization.resource.DataAuthorizable;
+import org.apache.nifi.authorization.resource.ProvenanceDataAuthorizable;
 import org.apache.nifi.authorization.resource.ResourceFactory;
 import org.apache.nifi.authorization.user.NiFiUser;
 import org.apache.nifi.bundle.Bundle;
@@ -102,6 +103,7 @@ import org.apache.nifi.controller.repository.claim.ResourceClaimManager;
 import org.apache.nifi.controller.repository.claim.StandardContentClaim;
 import org.apache.nifi.controller.repository.claim.StandardResourceClaimManager;
 import org.apache.nifi.controller.repository.io.LimitedInputStream;
+import org.apache.nifi.controller.repository.metrics.EmptyFlowFileEvent;
 import org.apache.nifi.controller.scheduling.EventDrivenSchedulingAgent;
 import org.apache.nifi.controller.scheduling.QuartzSchedulingAgent;
 import org.apache.nifi.controller.scheduling.RepositoryContextFactory;
@@ -629,7 +631,11 @@ public class FlowController implements EventAccess, ControllerServiceProvider, R
         timerDrivenEngineRef.get().scheduleWithFixedDelay(new Runnable() {
             @Override
             public void run() {
-                componentStatusRepository.capture(getControllerStatus(), getGarbageCollectionStatus());
+                try {
+                    componentStatusRepository.capture(getControllerStatus(), getGarbageCollectionStatus());
+                } catch (final Exception e) {
+                    LOG.error("Failed to capture component stats for Stats History", e);
+                }
             }
         }, snapshotMillis, snapshotMillis, TimeUnit.MILLISECONDS);
 
@@ -2696,6 +2702,35 @@ public class FlowController implements EventAccess, ControllerServiceProvider, R
         allProcessors.remove(identifier);
     }
 
+    public Connectable findLocalConnectable(final String id) {
+        final ProcessorNode procNode = getProcessorNode(id);
+        if (procNode != null) {
+            return procNode;
+        }
+
+        final Port inPort = getInputPort(id);
+        if (inPort != null) {
+            return inPort;
+        }
+
+        final Port outPort = getOutputPort(id);
+        if (outPort != null) {
+            return outPort;
+        }
+
+        final Funnel funnel = getFunnel(id);
+        if (funnel != null) {
+            return funnel;
+        }
+
+        final RemoteGroupPort remoteGroupPort = getRootGroup().findRemoteGroupPort(id);
+        if (remoteGroupPort != null) {
+            return remoteGroupPort;
+        }
+
+        return null;
+    }
+
     public ProcessorNode getProcessorNode(final String id) {
         return allProcessors.get(id);
     }
@@ -3303,18 +3338,7 @@ public class FlowController implements EventAccess, ControllerServiceProvider, R
         status.setType(isProcessorAuthorized ? procNode.getComponentType() : "Processor");
 
         final FlowFileEvent entry = report.getReportEntries().get(procNode.getIdentifier());
-        if (entry == null) {
-            status.setInputBytes(0L);
-            status.setInputCount(0);
-            status.setOutputBytes(0L);
-            status.setOutputCount(0);
-            status.setBytesWritten(0L);
-            status.setBytesRead(0L);
-            status.setProcessingNanos(0);
-            status.setInvocations(0);
-            status.setAverageLineageDuration(0L);
-            status.setFlowFilesRemoved(0);
-        } else {
+        if (entry != null && entry != EmptyFlowFileEvent.INSTANCE) {
             final int processedCount = entry.getFlowFilesOut();
             final long numProcessedBytes = entry.getContentSizeOut();
             status.setOutputBytes(numProcessedBytes);
@@ -4087,13 +4111,9 @@ public class FlowController implements EventAccess, ControllerServiceProvider, R
     }
 
     private RepositoryStatusReport getProcessorStats() {
-        // processed in last 5 minutes
-        return getProcessorStats(System.currentTimeMillis() - 300000);
+        return flowFileEventRepository.reportTransferEvents(System.currentTimeMillis());
     }
 
-    private RepositoryStatusReport getProcessorStats(final long since) {
-        return flowFileEventRepository.reportTransferEvents(since);
-    }
 
     //
     // Clustering methods
@@ -4932,7 +4952,7 @@ public class FlowController implements EventAccess, ControllerServiceProvider, R
             authorizable = new DataAuthorizable(getRootGroup());
         } else {
             // check if the component is a connectable, this should be the case most often
-            final Connectable connectable = getRootGroup().findLocalConnectable(componentId);
+            final Connectable connectable = findLocalConnectable(componentId);
             if (connectable == null) {
                 // if the component id is not a connectable then consider a connection
                 final Connection connection = getRootGroup().findConnection(componentId);
@@ -4961,6 +4981,38 @@ public class FlowController implements EventAccess, ControllerServiceProvider, R
         } else {
             // authorizable for remote group ports should be the remote process group
             authorizable = new DataAuthorizable(remoteGroupPort.getRemoteProcessGroup());
+        }
+
+        return authorizable;
+    }
+
+    @Override
+    public Authorizable createProvenanceDataAuthorizable(String componentId) {
+        final String rootGroupId = getRootGroupId();
+
+        // Provenance Events are generated only by connectable components, with the exception of DOWNLOAD events,
+        // which have the root process group's identifier assigned as the component ID, and DROP events, which
+        // could have the connection identifier assigned as the component ID. So, we check if the component ID
+        // is set to the root group and otherwise assume that the ID is that of a connectable or connection.
+        final ProvenanceDataAuthorizable authorizable;
+        if (rootGroupId.equals(componentId)) {
+            authorizable = new ProvenanceDataAuthorizable(getRootGroup());
+        } else {
+            // check if the component is a connectable, this should be the case most often
+            final Connectable connectable = findLocalConnectable(componentId);
+            if (connectable == null) {
+                // if the component id is not a connectable then consider a connection
+                final Connection connection = getRootGroup().findConnection(componentId);
+
+                if (connection == null) {
+                    throw new ResourceNotFoundException("The component that generated this event is no longer part of the data flow.");
+                } else {
+                    // authorizable for connection data is associated with the source connectable
+                    authorizable = new ProvenanceDataAuthorizable(connection.getSource());
+                }
+            } else {
+                authorizable = new ProvenanceDataAuthorizable(connectable);
+            }
         }
 
         return authorizable;

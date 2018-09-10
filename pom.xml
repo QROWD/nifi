@@ -19,7 +19,7 @@
     </parent>
     <groupId>org.apache.nifi</groupId>
     <artifactId>nifi</artifactId>
-    <version>1.7.0-SNAPSHOT</version>
+    <version>1.8.0-SNAPSHOT</version>
     <packaging>pom</packaging>
     <description>Apache NiFi is an easy to use, powerful, and reliable system to process and distribute data.</description>
     <modules>
@@ -92,8 +92,8 @@
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
         <inceptionYear>2014</inceptionYear>
         <org.slf4j.version>1.7.25</org.slf4j.version>
-        <ranger.version>0.7.1</ranger.version>
-        <jetty.version>9.4.3.v20170317</jetty.version>
+        <ranger.version>1.0.0</ranger.version>
+        <jetty.version>9.4.11.v20180605</jetty.version>
     </properties>
 
     <repositories>

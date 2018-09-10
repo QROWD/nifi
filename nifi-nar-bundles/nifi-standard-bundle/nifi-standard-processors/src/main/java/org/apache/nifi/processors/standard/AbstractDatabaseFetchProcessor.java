@@ -21,7 +21,6 @@ import org.apache.nifi.components.PropertyDescriptor;
 import org.apache.nifi.components.ValidationContext;
 import org.apache.nifi.components.ValidationResult;
 import org.apache.nifi.dbcp.DBCPService;
-import org.apache.nifi.expression.AttributeExpression;
 import org.apache.nifi.expression.ExpressionLanguageScope;
 import org.apache.nifi.flowfile.FlowFile;
 import org.apache.nifi.processor.AbstractSessionFactoryProcessor;
@@ -220,18 +219,6 @@ public abstract class AbstractDatabaseFetchProcessor extends AbstractSessionFact
                 .build();
     }
 
-    @Override
-    protected PropertyDescriptor getSupportedDynamicPropertyDescriptor(final String propertyDescriptorName) {
-        return new PropertyDescriptor.Builder()
-                .name(propertyDescriptorName)
-                .required(false)
-                .addValidator(StandardValidators.createAttributeExpressionLanguageValidator(AttributeExpression.ResultType.STRING, true))
-                .addValidator(StandardValidators.ATTRIBUTE_KEY_PROPERTY_NAME_VALIDATOR)
-                .expressionLanguageSupported(ExpressionLanguageScope.FLOWFILE_ATTRIBUTES)
-                .dynamic(true)
-                .build();
-    }
-
     // A common validation procedure for DB fetch processors, it stores whether the Table Name and/or Max Value Column properties have expression language
     protected Collection<ValidationResult> customValidate(ValidationContext validationContext) {
         // For backwards-compatibility, keep track of whether the table name and max-value column properties are dynamic (i.e. has expression language)
@@ -273,7 +260,7 @@ public abstract class AbstractDatabaseFetchProcessor extends AbstractSessionFact
                 if (StringUtils.isEmpty(sqlQuery)) {
                     query = dbAdapter.getSelectStatement(tableName, maxValueColumnNames, "1 = 0", null, null, null);
                 } else {
-                    StringBuilder sbQuery = getWrappedQuery(sqlQuery, tableName);
+                    StringBuilder sbQuery = getWrappedQuery(dbAdapter, sqlQuery, tableName);
                     sbQuery.append(" WHERE 1=0");
 
                     query = sbQuery.toString();
@@ -325,8 +312,8 @@ public abstract class AbstractDatabaseFetchProcessor extends AbstractSessionFact
         }
     }
 
-    protected static StringBuilder getWrappedQuery(String sqlQuery, String tableName){
-       return new StringBuilder("SELECT * FROM (" + sqlQuery + ") AS " + tableName);
+    protected static StringBuilder getWrappedQuery(DatabaseAdapter dbAdaper, String sqlQuery, String tableName) {
+       return new StringBuilder("SELECT * FROM (" + sqlQuery + ") " + dbAdaper.getTableAliasClause(tableName));
     }
 
     protected static String getMaxValueFromRow(ResultSet resultSet,
@@ -540,19 +527,16 @@ public abstract class AbstractDatabaseFetchProcessor extends AbstractSessionFact
         return sb.toString();
     }
 
-    protected Map<String,String> getDefaultMaxValueProperties(final Map<PropertyDescriptor, String> properties){
-        final Map<String,String> defaultMaxValues = new HashMap<>();
+    protected Map<String, String> getDefaultMaxValueProperties(final ProcessContext context, final FlowFile flowFile) {
+        final Map<String, String> defaultMaxValues = new HashMap<>();
 
-        for (final Map.Entry<PropertyDescriptor, String> entry : properties.entrySet()) {
-            final String key = entry.getKey().getName();
+        context.getProperties().forEach((k, v) -> {
+            final String key = k.getName();
 
-            if(!key.startsWith(INITIAL_MAX_VALUE_PROP_START)) {
-                continue;
+            if (key.startsWith(INITIAL_MAX_VALUE_PROP_START)) {
+                defaultMaxValues.put(key.substring(INITIAL_MAX_VALUE_PROP_START.length()), context.getProperty(k).evaluateAttributeExpressions(flowFile).getValue());
             }
-
-            defaultMaxValues.put(key.substring(INITIAL_MAX_VALUE_PROP_START.length()), entry.getValue());
-        }
-
+        });
         return defaultMaxValues;
     }
 }

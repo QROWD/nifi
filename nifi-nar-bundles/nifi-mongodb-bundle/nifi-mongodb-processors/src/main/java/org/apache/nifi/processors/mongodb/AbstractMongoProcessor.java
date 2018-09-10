@@ -18,6 +18,7 @@
  */
 package org.apache.nifi.processors.mongodb;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.mongodb.MongoClient;
 import com.mongodb.MongoClientOptions;
 import com.mongodb.MongoClientOptions.Builder;
@@ -29,13 +30,16 @@ import org.apache.commons.lang3.StringUtils;
 import org.apache.nifi.annotation.lifecycle.OnScheduled;
 import org.apache.nifi.annotation.lifecycle.OnStopped;
 import org.apache.nifi.authentication.exception.ProviderCreationException;
+import org.apache.nifi.components.AllowableValue;
 import org.apache.nifi.components.PropertyDescriptor;
+import org.apache.nifi.components.ValidationResult;
 import org.apache.nifi.expression.ExpressionLanguageScope;
 import org.apache.nifi.flowfile.FlowFile;
 import org.apache.nifi.processor.AbstractProcessor;
 import org.apache.nifi.processor.ProcessContext;
 import org.apache.nifi.processor.ProcessSession;
 import org.apache.nifi.processor.Relationship;
+import org.apache.nifi.processor.exception.ProcessException;
 import org.apache.nifi.processor.util.StandardValidators;
 import org.apache.nifi.security.util.SslContextFactory;
 import org.apache.nifi.ssl.SSLContextService;
@@ -45,7 +49,10 @@ import javax.net.ssl.SSLContext;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.UnsupportedEncodingException;
+import java.text.DateFormat;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.List;
 import java.util.Map;
 
@@ -57,6 +64,13 @@ public abstract class AbstractMongoProcessor extends AbstractProcessor {
     static final String WRITE_CONCERN_REPLICA_ACKNOWLEDGED = "REPLICA_ACKNOWLEDGED";
     static final String WRITE_CONCERN_MAJORITY = "MAJORITY";
 
+    protected static final String JSON_TYPE_EXTENDED = "Extended";
+    protected static final String JSON_TYPE_STANDARD   = "Standard";
+    protected static final AllowableValue JSON_EXTENDED = new AllowableValue(JSON_TYPE_EXTENDED, "Extended JSON",
+            "Use MongoDB's \"extended JSON\". This is the JSON generated with toJson() on a MongoDB Document from the Java driver");
+    protected static final AllowableValue JSON_STANDARD = new AllowableValue(JSON_TYPE_STANDARD, "Standard JSON",
+            "Generate a JSON document that conforms to typical JSON conventions instead of Mongo-specific conventions.");
+
     protected static final PropertyDescriptor URI = new PropertyDescriptor.Builder()
         .name("Mongo URI")
         .displayName("Mongo URI")
@@ -65,6 +79,7 @@ public abstract class AbstractMongoProcessor extends AbstractProcessor {
         .expressionLanguageSupported(ExpressionLanguageScope.VARIABLE_REGISTRY)
         .addValidator(StandardValidators.NON_EMPTY_VALIDATOR)
         .build();
+
     protected static final PropertyDescriptor DATABASE_NAME = new PropertyDescriptor.Builder()
         .name("Mongo Database Name")
         .displayName("Mongo Database Name")
@@ -73,6 +88,7 @@ public abstract class AbstractMongoProcessor extends AbstractProcessor {
         .expressionLanguageSupported(ExpressionLanguageScope.FLOWFILE_ATTRIBUTES)
         .addValidator(StandardValidators.NON_EMPTY_VALIDATOR)
         .build();
+
     protected static final PropertyDescriptor COLLECTION_NAME = new PropertyDescriptor.Builder()
         .name("Mongo Collection Name")
         .description("The name of the collection to use")
@@ -80,6 +96,19 @@ public abstract class AbstractMongoProcessor extends AbstractProcessor {
         .expressionLanguageSupported(ExpressionLanguageScope.FLOWFILE_ATTRIBUTES)
         .addValidator(StandardValidators.NON_EMPTY_VALIDATOR)
         .build();
+
+    protected static final PropertyDescriptor JSON_TYPE = new PropertyDescriptor.Builder()
+            .allowableValues(JSON_EXTENDED, JSON_STANDARD)
+            .defaultValue(JSON_TYPE_EXTENDED)
+            .displayName("JSON Type")
+            .name("json-type")
+            .description("By default, MongoDB's Java driver returns \"extended JSON\". Some of the features of this variant of JSON" +
+                    " may cause problems for other JSON parsers that expect only standard JSON types and conventions. This configuration setting " +
+                    " controls whether to use extended JSON or provide a clean view that conforms to standard JSON.")
+            .expressionLanguageSupported(ExpressionLanguageScope.NONE)
+            .required(true)
+            .build();
+
     public static final PropertyDescriptor SSL_CONTEXT_SERVICE = new PropertyDescriptor.Builder()
         .name("ssl-context-service")
         .displayName("SSL Context Service")
@@ -88,6 +117,7 @@ public abstract class AbstractMongoProcessor extends AbstractProcessor {
         .required(false)
         .identifiesControllerService(SSLContextService.class)
         .build();
+
     public static final PropertyDescriptor CLIENT_AUTH = new PropertyDescriptor.Builder()
         .name("ssl-client-auth")
         .displayName("Client Auth")
@@ -145,6 +175,30 @@ public abstract class AbstractMongoProcessor extends AbstractProcessor {
             .expressionLanguageSupported(ExpressionLanguageScope.FLOWFILE_ATTRIBUTES)
             .build();
 
+    static final PropertyDescriptor DATE_FORMAT = new PropertyDescriptor.Builder()
+        .name("mongo-date-format")
+        .displayName("Date Format")
+        .description("The date format string to use for formatting Date fields that are returned from Mongo. It is only " +
+                "applied when the JSON output format is set to Standard JSON. Full documentation for format characters can be " +
+                "found here: https://docs.oracle.com/javase/8/docs/api/java/text/SimpleDateFormat.html")
+        .defaultValue("yyyy-MM-dd'T'HH:mm:ss'Z'")
+        .addValidator((subject, input, context) -> {
+            ValidationResult.Builder result = new ValidationResult.Builder()
+                .subject(subject)
+                .input(input);
+            try {
+                new SimpleDateFormat(input).format(new Date());
+                result.valid(true);
+            } catch (Exception ex) {
+                result.valid(false)
+                    .explanation(ex.getMessage());
+            }
+
+            return result.build();
+        })
+        .expressionLanguageSupported(ExpressionLanguageScope.FLOWFILE_ATTRIBUTES)
+        .build();
+
     static List<PropertyDescriptor> descriptors = new ArrayList<>();
 
     static {
@@ -155,6 +209,7 @@ public abstract class AbstractMongoProcessor extends AbstractProcessor {
         descriptors.add(CLIENT_AUTH);
     }
 
+    protected ObjectMapper objectMapper;
     protected MongoClient mongoClient;
 
     @OnScheduled
@@ -221,6 +276,9 @@ public abstract class AbstractMongoProcessor extends AbstractProcessor {
 
     protected MongoDatabase getDatabase(final ProcessContext context, final FlowFile flowFile) {
         final String databaseName = context.getProperty(DATABASE_NAME).evaluateAttributeExpressions(flowFile).getValue();
+        if (StringUtils.isEmpty(databaseName)) {
+            throw new ProcessException("Database name was empty after expression language evaluation.");
+        }
         return mongoClient.getDatabase(databaseName);
     }
 
@@ -230,6 +288,9 @@ public abstract class AbstractMongoProcessor extends AbstractProcessor {
 
     protected MongoCollection<Document> getCollection(final ProcessContext context, final FlowFile flowFile) {
         final String collectionName = context.getProperty(COLLECTION_NAME).evaluateAttributeExpressions(flowFile).getValue();
+        if (StringUtils.isEmpty(collectionName)) {
+            throw new ProcessException("Collection name was empty after expression language evaluation.");
+        }
         return getDatabase(context, flowFile).getCollection(collectionName);
     }
 
@@ -274,5 +335,15 @@ public abstract class AbstractMongoProcessor extends AbstractProcessor {
         flowFile = session.putAllAttributes(flowFile, extraAttributes);
         session.getProvenanceReporter().receive(flowFile, getURI(context));
         session.transfer(flowFile, rel);
+    }
+
+    protected synchronized void configureMapper(String setting, String dateFormat) {
+        objectMapper = new ObjectMapper();
+
+        if (setting.equals(JSON_TYPE_STANDARD)) {
+            objectMapper.registerModule(ObjectIdSerializer.getModule());
+            DateFormat df = new SimpleDateFormat(dateFormat);
+            objectMapper.setDateFormat(df);
+        }
     }
 }

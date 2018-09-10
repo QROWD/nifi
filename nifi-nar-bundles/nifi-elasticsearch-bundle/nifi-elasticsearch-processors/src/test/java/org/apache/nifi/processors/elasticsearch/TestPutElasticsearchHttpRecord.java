@@ -78,6 +78,7 @@ public class TestPutElasticsearchHttpRecord {
         final MockFlowFile out = runner.getFlowFilesForRelationship(PutElasticsearchHttpRecord.REL_SUCCESS).get(0);
         assertNotNull(out);
         out.assertAttributeEquals("doc_id", "28039652140");
+        out.assertAttributeEquals("record.count", "4");
         List<ProvenanceEventRecord> provEvents = runner.getProvenanceEvents();
         assertNotNull(provEvents);
         assertEquals(1, provEvents.size());
@@ -263,8 +264,10 @@ public class TestPutElasticsearchHttpRecord {
         runner.enqueue(new byte[0]);
         runner.run(1, true, true);
 
-        runner.assertTransferCount(PutElasticsearchHttpRecord.REL_FAILURE, 1);
         runner.assertTransferCount(PutElasticsearchHttpRecord.REL_SUCCESS, 0);
+        runner.assertTransferCount(PutElasticsearchHttpRecord.REL_FAILURE, 1);
+        MockFlowFile flowFile = runner.getFlowFilesForRelationship(PutElasticsearchHttpRecord.REL_FAILURE).get(0);
+        flowFile.assertAttributeEquals("failure.count", "1");
     }
 
     @Test
@@ -484,6 +487,23 @@ public class TestPutElasticsearchHttpRecord {
         }
         runner.run();
         runner.assertAllFlowFilesTransferred(PutElasticsearchHttpRecord.REL_SUCCESS, 100);
+    }
+
+    @Test(expected = AssertionError.class)
+    public void testPutElasticSearchBadHostInEL() throws IOException {
+        final TestRunner runner = TestRunners.newTestRunner(new PutElasticsearchHttpRecord());
+
+        runner.setProperty(AbstractElasticsearchHttpProcessor.ES_URL, "${es.url}");
+        runner.setProperty(PutElasticsearchHttpRecord.INDEX, "doc");
+        runner.setProperty(PutElasticsearchHttpRecord.TYPE, "status");
+        runner.setProperty(PutElasticsearchHttpRecord.ID_RECORD_PATH, "/id");
+        runner.assertValid();
+
+        runner.enqueue(new byte[0], new HashMap<String, String>() {{
+            put("doc_id", "1");
+        }});
+
+        runner.run();
     }
 
     private void generateTestData() throws IOException {

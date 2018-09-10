@@ -51,7 +51,11 @@ import java.util.Set;
 @EventDriven
 @Tags({"mongodb", "insert", "record", "put"})
 @InputRequirement(InputRequirement.Requirement.INPUT_REQUIRED)
-@CapabilityDescription("Bulk ingest documents into MongoDB using a configured record reader.")
+@CapabilityDescription("This processor is a record-aware processor for inserting data into MongoDB. It uses a configured record reader and " +
+        "schema to read an incoming record set from the body of a flowfile and then inserts batches of those records into " +
+        "a configured MongoDB collection. This processor does not support updates, deletes or upserts. The number of documents to insert at a time is controlled " +
+        "by the \"Insert Batch Size\" configuration property. This value should be set to a reasonable size to ensure " +
+        "that MongoDB is not overloaded with too many inserts at once.")
 public class PutMongoRecord extends AbstractMongoProcessor {
     static final Relationship REL_SUCCESS = new Relationship.Builder().name("success")
             .description("All FlowFiles that are written to MongoDB are routed to this relationship").build();
@@ -113,8 +117,6 @@ public class PutMongoRecord extends AbstractMongoProcessor {
 
         final WriteConcern writeConcern = getWriteConcern(context);
 
-        final MongoCollection<Document> collection = getCollection(context, flowFile).withWriteConcern(writeConcern);
-
         List<Document> inserts = new ArrayList<>();
         int ceiling = context.getProperty(INSERT_COUNT).asInteger();
         int added   = 0;
@@ -122,6 +124,7 @@ public class PutMongoRecord extends AbstractMongoProcessor {
 
         try (final InputStream inStream = session.read(flowFile);
              final RecordReader reader = recordParserFactory.createRecordReader(flowFile, inStream, getLogger())) {
+            final MongoCollection<Document> collection = getCollection(context, flowFile).withWriteConcern(writeConcern);
             RecordSchema schema = reader.getSchema();
             Record record;
             while ((record = reader.nextRecord()) != null) {
@@ -131,7 +134,7 @@ public class PutMongoRecord extends AbstractMongoProcessor {
                 for (String name : schema.getFieldNames()) {
                     document.put(name, contentMap.get(name));
                 }
-                inserts.add(document);
+                inserts.add(convertArrays(document));
                 if (inserts.size() == ceiling) {
                     collection.insertMany(inserts);
                     added += inserts.size();
@@ -153,5 +156,35 @@ public class PutMongoRecord extends AbstractMongoProcessor {
             }
         }
         session.commit();
+    }
+
+    private Document convertArrays(Document doc) {
+        Document retVal = new Document();
+        for (Map.Entry<String, Object> entry : doc.entrySet()) {
+            if (entry.getValue() != null && entry.getValue().getClass().isArray()) {
+                retVal.put(entry.getKey(), convertArrays((Object[])entry.getValue()));
+            } else if (entry.getValue() != null && (entry.getValue() instanceof Map || entry.getValue() instanceof Document)) {
+                retVal.put(entry.getKey(), convertArrays(new Document((Map)entry.getValue())));
+            } else {
+                retVal.put(entry.getKey(), entry.getValue());
+            }
+        }
+
+        return retVal;
+    }
+
+    private List convertArrays(Object[] input) {
+        List retVal = new ArrayList();
+        for (Object o : input) {
+            if (o != null && o.getClass().isArray()) {
+                retVal.add(convertArrays((Object[])o));
+            } else if (o instanceof Map) {
+                retVal.add(convertArrays(new Document((Map)o)));
+            } else {
+                retVal.add(o);
+            }
+        }
+
+        return retVal;
     }
 }

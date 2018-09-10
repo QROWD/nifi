@@ -23,11 +23,12 @@
                 'd3',
                 'nf.Common',
                 'nf.Dialog',
+                'nf.Storage',
                 'nf.ErrorHandler',
                 'nf.Client',
                 'nf.CanvasUtils'],
-            function ($, d3, nfCommon, nfDialog, nfErrorHandler, nfClient, nfCanvasUtils) {
-                return (nf.Connection = factory($, d3, nfCommon, nfDialog, nfErrorHandler, nfClient, nfCanvasUtils));
+            function ($, d3, nfCommon, nfDialog, nfStorage, nfErrorHandler, nfClient, nfCanvasUtils) {
+                return (nf.Connection = factory($, d3, nfCommon, nfDialog, nfStorage, nfErrorHandler, nfClient, nfCanvasUtils));
             });
     } else if (typeof exports === 'object' && typeof module === 'object') {
         module.exports = (nf.Connection =
@@ -35,6 +36,7 @@
                 require('d3'),
                 require('nf.Common'),
                 require('nf.Dialog'),
+                require('nf.Storage'),
                 require('nf.ErrorHandler'),
                 require('nf.Client'),
                 require('nf.CanvasUtils')));
@@ -43,11 +45,12 @@
             root.d3,
             root.nf.Common,
             root.nf.Dialog,
+            root.nf.Storage,
             root.nf.ErrorHandler,
             root.nf.Client,
             root.nf.CanvasUtils);
     }
-}(this, function ($, d3, nfCommon, nfDialog, nfErrorHandler, nfClient, nfCanvasUtils) {
+}(this, function ($, d3, nfCommon, nfDialog, nfStorage, nfErrorHandler, nfClient, nfCanvasUtils) {
     'use strict';
 
     var nfSelectable;
@@ -666,7 +669,6 @@
 
                     // create a point for the end
                     var endpointsEntered = endpoints.enter().append('rect')
-                        .call(endpointDrag)
                         .attrs({
                             'class': 'endpoint linepoint',
                             'pointer-events': 'all',
@@ -680,6 +682,7 @@
                             // update URL deep linking params
                             nfCanvasUtils.setURLParameters();
                         })
+                        .call(endpointDrag)
                         .call(nfContextMenu.activate);
 
                     // update the end point
@@ -705,7 +708,6 @@
                             'width': 8,
                             'height': 8
                         })
-                        .call(bendPointDrag)
                         .on('dblclick', function (p) {
                             // stop even propagation
                             d3.event.stopPropagation();
@@ -763,6 +765,7 @@
                             // update URL deep linking params
                             nfCanvasUtils.setURLParameters();
                         })
+                        .call(bendPointDrag)
                         .call(nfContextMenu.activate);
 
                     // update the midpoints
